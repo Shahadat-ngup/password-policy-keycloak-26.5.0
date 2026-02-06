@@ -13,8 +13,8 @@ public class CustomPasswordPolicyProviderFactory implements PasswordPolicyProvid
 
     public static final String ID = "custom-password-policy";
     public static final String DISPLAY_NAME = "Custom Password Policy";
-    public static final String CONFIG_TYPE = "boolean";
-    public static final String DEFAULT_VALUE = "true";
+    public static final String CONFIG_TYPE = "int";
+    public static final String DEFAULT_VALUE = "12";
 
     @Override
     public PasswordPolicyProvider create(KeycloakSession session) {
