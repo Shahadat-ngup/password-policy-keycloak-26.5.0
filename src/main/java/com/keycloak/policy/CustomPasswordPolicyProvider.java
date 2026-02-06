@@ -6,16 +6,15 @@ import org.keycloak.models.UserModel;
 import org.keycloak.policy.PasswordPolicyProvider;
 import org.keycloak.policy.PolicyError;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Base64;
-import java.util.List;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -40,29 +39,94 @@ public class CustomPasswordPolicyProvider implements PasswordPolicyProvider {
     
     private final KeycloakContext context;
     private Integer configuredMinLength;
+    private static final Map<String, Properties> messageCache = new HashMap<>();
 
     public CustomPasswordPolicyProvider(KeycloakContext context) {
         this.context = context;
         this.configuredMinLength = null;
     }
     
-    private boolean isPortuguese(UserModel user) {
+    /**
+     * Get localized message from properties files
+     */
+    private String getMessage(String key, UserModel user, Object... params) {
+        String locale = getLocale(user);
+        Properties messages = loadMessages(locale);
+        
+        String message = messages.getProperty(key, key);
+        
+        // Replace parameters {0}, {1}, etc.
+        if (params != null && params.length > 0) {
+            for (int i = 0; i < params.length; i++) {
+                message = message.replace("{" + i + "}", String.valueOf(params[i]));
+            }
+        }
+        
+        return message;
+    }
+    
+    /**
+     * Detect user's locale
+     */
+    private String getLocale(UserModel user) {
         try {
             if (context != null && user != null) {
                 String locale = context.resolveLocale(user).getLanguage();
-                return "pt".equals(locale);
+                return locale != null ? locale : "en";
             }
             // Fallback to checking HTTP request locale
             if (context != null && context.getRequestHeaders() != null) {
                 String acceptLanguage = context.getRequestHeaders().getHeaderString("Accept-Language");
                 if (acceptLanguage != null && acceptLanguage.toLowerCase().contains("pt")) {
-                    return true;
+                    return "pt";
                 }
             }
         } catch (Exception e) {
             // If locale detection fails, default to English
         }
-        return false;
+        return "en";
+    }
+    
+    /**
+     * Load message properties file for given locale
+     * Priority: 1) External directory (/opt/keycloak/messages/), 2) JAR (classpath)
+     */
+    private Properties loadMessages(String locale) {
+        // Check cache first
+        if (messageCache.containsKey(locale)) {
+            return messageCache.get(locale);
+        }
+        
+        Properties props = new Properties();
+        String filename = "messages_" + locale + ".properties";
+        
+        // Try loading from external directory first
+        try (InputStream is = new java.io.FileInputStream("/opt/keycloak/messages/" + filename)) {
+            props.load(is);
+            messageCache.put(locale, props);
+            System.out.println("[CUSTOM-PASSWORD-POLICY] Loaded messages from external: " + filename);
+            return props;
+        } catch (IOException e) {
+            // File not found externally, try JAR
+        }
+        
+        // Fallback to JAR (classpath)
+        try (InputStream is = getClass().getClassLoader().getResourceAsStream(filename)) {
+            if (is != null) {
+                props.load(is);
+                messageCache.put(locale, props);
+                System.out.println("[CUSTOM-PASSWORD-POLICY] Loaded messages from JAR: " + filename);
+            } else {
+                // Fallback to English if locale file not found
+                if (!"en".equals(locale)) {
+                    return loadMessages("en");
+                }
+            }
+        } catch (IOException e) {
+            System.err.println("[CUSTOM-PASSWORD-POLICY] Error loading messages: " + e.getMessage());
+        }
+        
+        return props;
     }
 
     public void setConfiguredMinLength(Integer minLength) {
@@ -314,14 +378,13 @@ public class CustomPasswordPolicyProvider implements PasswordPolicyProvider {
 
     /**
      * Check password against all validation rules
+     * Uses localized messages from properties files
      */
     private PolicyError checkPassword(String password, List<String> badWords, UserModel user) {
         if (password == null) {
-            boolean isPt = isPortuguese(user);
-            return new PolicyError(isPt ? "A senha não pode ser nula" : "Password cannot be null");
+            return new PolicyError(getMessage("invalidPasswordNull", user));
         }
         
-        boolean isPt = isPortuguese(user);
         int passwordLength = password.length();
         int requiredMinLength = (configuredMinLength != null && configuredMinLength > 0) ? configuredMinLength : MIN_LENGTH;
         
@@ -330,26 +393,20 @@ public class CustomPasswordPolicyProvider implements PasswordPolicyProvider {
         // Check password history
         if (user != null && user.getUsername() != null) {
             if (checkPasswordHistory(user.getUsername(), password)) {
-                errors.add(String.format("• %s", 
-                    isPt ? "A senha não pode ser reutilizada de históricos anteriores"
-                         : "Password cannot be reused from previous history"));
+                errors.add(getMessage("invalidPasswordHistory", user));
             }
         }
         
         // Check minimum length
         if (passwordLength < requiredMinLength) {
-            errors.add(String.format("• %s", 
-                isPt ? String.format("A senha deve ter pelo menos %d caracteres (atual: %d)", requiredMinLength, passwordLength)
-                     : String.format("Password must be at least %d characters long (current: %d)", requiredMinLength, passwordLength)));
+            errors.add(getMessage("invalidPasswordMinLength", user, requiredMinLength, passwordLength));
         }
         
         // Check for bad words
         for (String badWord : badWords) {
             if (badWord != null && !badWord.isEmpty()) {
                 if (password.toLowerCase().contains(badWord.toLowerCase())) {
-                    errors.add(String.format("• %s", 
-                        isPt ? String.format("A senha não pode conter '%s' (parte do seu nome de usuário ou nome)", badWord)
-                             : String.format("Password cannot contain '%s' (part of your username or name)", badWord)));
+                    errors.add(getMessage("invalidPasswordContainsBadWord", user, badWord));
                     break; // Only report the first match to avoid clutter
                 }
             }
@@ -360,7 +417,7 @@ public class CustomPasswordPolicyProvider implements PasswordPolicyProvider {
         List<String> foundGroups = new ArrayList<>();
         List<String> missingGroups = new ArrayList<>();
         
-        if (Pattern.compile("[" + Pattern.quote(DIGITS) + "]").matcher(password).find()) {
+        if (Pattern.compile("[" + DIGITS + "]").matcher(password).find()) {
             foundGroups.add("digits (0-9)");
             groupsFound++;
         } else {
@@ -389,17 +446,11 @@ public class CustomPasswordPolicyProvider implements PasswordPolicyProvider {
         }
         
         if (groupsFound < 3) {
-            if (isPt) {
-                errors.add("• A senha deve conter pelo menos 3 tipos de caracteres");
-                errors.add(String.format("• Encontrado: %s", 
-                    foundGroups.isEmpty() ? "nenhum" : String.join(", ", foundGroups)));
-                errors.add(String.format("• Faltando: %s", String.join(", ", missingGroups)));
-            } else {
-                errors.add("• Password must contain at least 3 character types");
-                errors.add(String.format("• Found: %s", 
-                    foundGroups.isEmpty() ? "none" : String.join(", ", foundGroups)));
-                errors.add(String.format("• Missing: %s", String.join(", ", missingGroups)));
-            }
+            String found = foundGroups.isEmpty() ? "none" : String.join(", ", foundGroups);
+            String missing = String.join(", ", missingGroups);
+            errors.add(getMessage("invalidPasswordComplexity", user));
+            errors.add(getMessage("invalidPasswordComplexityFound", user, found));
+            errors.add(getMessage("invalidPasswordComplexityMissing", user, missing));
         }
         
         // Check for invalid characters
@@ -414,14 +465,12 @@ public class CustomPasswordPolicyProvider implements PasswordPolicyProvider {
                 }
             } while (invalidMatcher.find());
             
-            errors.add(String.format("• %s", 
-                isPt ? String.format("A senha contém caracteres inválidos: %s (evite aspas, letras acentuadas, €+-)", String.join(", ", invalidFound))
-                     : String.format("Password contains invalid characters: %s (avoid quotes, accented letters, €+-)", String.join(", ", invalidFound))));
+            errors.add(getMessage("invalidPasswordInvalidChars", user, String.join(", ", invalidFound)));
         }
         
-        // Return all errors as bullet points
+        // Return all errors
         if (!errors.isEmpty()) {
-            String header = isPt ? "A senha não atende aos requisitos:" : "Password does not meet requirements:";
+            String header = getMessage("invalidPasswordRequirements", user);
             return new PolicyError(header + "<br/>" + String.join("<br/>", errors));
         }
         
