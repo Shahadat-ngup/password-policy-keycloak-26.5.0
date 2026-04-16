@@ -1,6 +1,6 @@
 # Keycloak Custom Password Policy Plugin
 
-Custom password policy provider for Keycloak 26.5.0 that validates passwords based on user-specific forbidden words and complexity rules with multi-language support (English/Portuguese).
+Custom password policy provider for Keycloak 26.6.0 that validates passwords based on user-specific forbidden words and complexity rules with multi-language support (English/Portuguese).
 
 ## Features
 
@@ -24,7 +24,7 @@ Custom password policy provider for Keycloak 26.5.0 that validates passwords bas
 
 - Java 17 or higher
 - Maven 3.6 or higher
-- Keycloak 26.5.0
+- Keycloak 26.6.0
 - LDAP federation configured (for full name extraction)
 
 ## Build
@@ -109,12 +109,11 @@ The plugin provides user-friendly error messages in bullet-point format:
 ```
 Password does not meet requirements:
 • Password must be at least 12 characters long (current: 8)
-• Password cworks with LDAP-federated users and extracts the full name from:
-1. **Primary**: `cn` attribute (Common Name) - contains the complete name including middle names
-2. **Fallback**: `displayName` attribute
-3. **Fallback**: `firstName` + `lastName` attributes
-
-**Important:** Make sure to configure the LDAP mapper (see Configuration section) to import the `cn` attribute, otherwise the plugin won't be able to block middle names.
+• Password cannot contain 'john' (part of your name)
+• Password must contain at least 3 character types
+• Found: lowercase (a-z)
+• Missing: digits (0-9), uppercase (A-Z), symbols (@!#$%&()=.:,;*<>)
+```
 
 ## Security Considerations
 
@@ -170,6 +169,20 @@ This plugin automatically works with LDAP-federated users. It extracts:
 - `lastName` attribute
 - `cn` (Common Name) attribute as fallback
 - `username`
+
+**Important:** Make sure to configure the LDAP mapper (see Configuration section) to import the `cn` attribute, otherwise the plugin won't be able to block middle names.
+
+## Integration & Event Listener Handoff
+
+Standard Keycloak architecture does not provide the plaintext password to `EventListenerProvider` implementations for security reasons.
+
+To facilitate custom downstream password synchronizations (like updating an external API or calculating `shadowlastchange` in OpenLDAP), this plugin performs a secure **handoff**:
+1. It intercepts the user's plaintext password during validation.
+2. If all validations pass, it temporarily stashes the password directly into the request's in-memory `KeycloakSession`:
+   `session.setAttribute("TEMPORARY_PLAINTEXT_PW", password);`
+3. A separate, logically-isolated `EventListenerProvider` can then fetch the plaintext password from the session when it catches the `UPDATE_PASSWORD` event.
+
+*Note: The password is only stored for the exact lifespan of the HTTP transaction and is swiftly garbage collected.*
 
 ## Testing
 

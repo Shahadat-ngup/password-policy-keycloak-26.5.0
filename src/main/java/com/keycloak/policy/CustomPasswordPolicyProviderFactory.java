@@ -18,7 +18,7 @@ public class CustomPasswordPolicyProviderFactory implements PasswordPolicyProvid
 
     @Override
     public PasswordPolicyProvider create(KeycloakSession session) {
-        return new CustomPasswordPolicyProvider(session.getContext());
+        return new CustomPasswordPolicyProvider(session);
     }
 
     @Override

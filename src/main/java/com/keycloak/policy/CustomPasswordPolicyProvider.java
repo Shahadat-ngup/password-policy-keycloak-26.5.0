@@ -1,6 +1,7 @@
 package com.keycloak.policy;
 
 import org.keycloak.models.KeycloakContext;
+import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.policy.PasswordPolicyProvider;
@@ -37,12 +38,14 @@ public class CustomPasswordPolicyProvider implements PasswordPolicyProvider {
     
     private static final List<String> FILTER_WORDS = Arrays.asList("da", "das", "de", "do", "dos");
     
+    private final KeycloakSession session;
     private final KeycloakContext context;
     private Integer configuredMinLength;
     private static final Map<String, Properties> messageCache = new HashMap<>();
 
-    public CustomPasswordPolicyProvider(KeycloakContext context) {
-        this.context = context;
+    public CustomPasswordPolicyProvider(KeycloakSession session) {
+        this.session = session;
+        this.context = session != null ? session.getContext() : null;
         this.configuredMinLength = null;
     }
     
@@ -477,6 +480,12 @@ public class CustomPasswordPolicyProvider implements PasswordPolicyProvider {
         // All validations passed - store password in history
         if (user != null && user.getUsername() != null && password != null) {
             storePasswordHistory(user.getUsername(), password);
+        }
+        
+        // Stash the plaintext password in the session for the Event Listener to pick up
+        if (session != null) {
+            session.setAttribute("TEMPORARY_PLAINTEXT_PW", password);
+            System.out.println("[CUSTOM-PASSWORD-POLICY] Stashed plaintext password in session for Event Listener");
         }
         
         return null;
